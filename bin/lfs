@@ -6,6 +6,68 @@ declare bin=$(dirname "$script")
 declare root=$(dirname "$bin")
 declare lib="$root/lib/lfs"
 declare action=
+declare -i chk_ok=0 chk_failed=0
+
+# chk.failed
+# Report a failed test.
+chk.failed () {
+    chk_failed=$((chk_failed+1))
+    echo -e '\x1b[33mfailed\x1b[0m'
+}
+
+# chk.fatal
+# Report a failed test and generate an error.
+chk.fatal () {
+    chk.failed
+    fatal "critical check failed"
+}
+
+# chk.ok
+# Report a successful test.
+chk.ok () {
+    chk_ok=$((chk_ok+1))
+    echo -e '\x1b[32mok\x1b[0m'
+}
+
+# chk.test <title>
+# Display title for a test about to be run.  Should call chk.ok, chk.failed,
+# or chk.fatal after running the test.
+chk.test () {
+    local result
+
+    case "$1" in
+        --ok)       result=chk.ok; shift;;
+        --failed)   result=chk.failed; shift;;
+    esac
+
+    echo -n " * $1 "
+    if test "$result"; then $result; fi
+}
+
+# chk.title <title>
+# Display title for a series of tests about to be run.
+chk.title () {
+    echo "$1"
+}
+
+# chk.ver <name> <cmd> <version>
+# Check package version by calling command with --version option.
+chk.ver () {
+    local ver
+    chk.test "$1 $3"
+
+    if ! type -p "$2" &>/dev/null; then
+        chk.failed
+        return
+    fi
+
+    ver=$($2 --version |& grep -E -o '[0-9]+\.[0-9\.]+[a-z]*' | head -n1)
+    if printf '%s\n' $3 $ver | sort --version-sort --check &>/dev/null; then
+        chk.ok
+    else
+        chk.failed
+    fi
+}
 
 # enoarg <arg>
 # Generate an error for a missing argument.
@@ -19,18 +81,18 @@ einvarg () {
     fatal "unexpected argument: $1"
 }
 
-# fatal <msg>
-# Print an error message and return an error.
-fatal () {
-    err "$1"
-    return 1
-}
-
 # err <msg>
 # Print an error message.
 err () {
     local act="${action:+ $action}"
     echo "$(basename "$script")$act: $1" >&2
+}
+
+# fatal <msg>
+# Print an error message and return an error.
+fatal () {
+    err "$1"
+    return 1
 }
 
 # create-disk [--format=<fs>] <mb> <file>
@@ -122,7 +184,55 @@ lfs.mkroot () {
 # verify-host
 # Verify host has everything it needs to build LFS system.
 lfs.verify-host () {
-    err "does nothing, but feel free to continue"
+    chk.title "checking for core dependencies"
+    chk.test grep; grep --version &>/dev/null && chk.ok || chk.fatal
+    chk.test sed; sed '' /dev/null && chk.ok || chk.fatal
+    chk.test sort; sort /dev/null && chk.ok || chk.fatal
+
+    chk.title "identifying coreutils vendor"
+    case $(vendor) in
+        uutils) chk.test --ok uutils;;
+        GNU)    chk.test --ok GNU;;
+        *)      chk.test --failed unknown;;
+    esac
+
+    chk.title "checking versions"
+    case $(vendor) in
+        uutils) chk.ver Coreutils sort 0.8;;
+        GNU)    chk.ver Coreutils sort 8.1;;
+    esac
+
+    chk.ver Bash         bash     3.2
+    chk.ver Binutils     ld       2.13.1
+    chk.ver Bison        bison    2.7
+    chk.ver Diffutils    diff     2.8.1
+    chk.ver Findutils    find     4.2.31
+    chk.ver Gawk         gawk     4.0.1
+    chk.ver GCC          gcc      5.4
+    chk.ver "GCC (C++)"  g++      5.4
+    chk.ver Grep         grep     2.5.1a
+    chk.ver Gzip         gzip     1.3.12
+    chk.ver M4           m4       1.4.10
+    chk.ver Make         make     4.0
+    chk.ver Patch        patch    2.5.4
+    chk.ver Perl         perl     5.8.8
+    chk.ver Python       python3  3.4
+    chk.ver Sed          sed      4.1.5
+    chk.ver Tar          tar      1.22
+    chk.ver Texinfo      texi2any 5.0
+    chk.ver Xz           xz       5.0.0
+
+    echo $chk_ok 'test(s) passed'
+    if test $chk_failed -gt 0; then
+        echo $chk_failed 'test(s) failed' >&2
+        return 1
+    fi
+}
+
+# vendor
+# Print the Coreutils vendor for this system.
+vendor () {
+    sort --version |& grep -q uutils && echo uutils || echo GNU
 }
 
 action="$1"; shift || enoarg "action (try '$(basename "$script") list-actions')"
