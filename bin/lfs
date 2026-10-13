@@ -1,0 +1,134 @@
+#!/bin/bash -e
+
+declare tmpdir=$(mktemp -d); trap "rm -rf $tmpdir" EXIT
+declare script=$(realpath "$0")
+declare bin=$(dirname "$script")
+declare root=$(dirname "$bin")
+declare lib="$root/lib/lfs"
+declare action=
+
+# enoarg <arg>
+# Generate an error for a missing argument.
+enoarg () {
+    fatal "missing argument: $1"
+}
+
+# einvarg <arg>
+# Generate an error for an invalid or unexpected argument.
+einvarg () {
+    fatal "unexpected argument: $1"
+}
+
+# fatal <msg>
+# Print an error message and return an error.
+fatal () {
+    err "$1"
+    return 1
+}
+
+# err <msg>
+# Print an error message.
+err () {
+    local act="${action:+ $action}"
+    echo "$(basename "$script")$act: $1" >&2
+}
+
+# create-disk [--format=<fs>] <mb> <file>
+# Create a disk image and optionally format it.
+lfs.create-disk () {
+    local format
+
+    case "$1" in
+        --format)   format="$2"; shift 2 || enoarg "fs type";;
+        --format=*) format="${1#*=}"; shift;;
+    esac
+
+    local -i size="$1"; shift || enoarg "size"
+    local file="$1"; shift || enoarg "file"
+
+    dd if=/dev/zero of="$file" bs=1M count=$size
+
+    if test "$format"; then
+        mkfs."$format" "$file"
+    fi
+}
+
+# create-user <username>
+# Create the LFS user account.
+lfs.create-user () {
+    local username="$1"; shift || enoarg username
+    useradd -rms /bin/bash -b /var/lib -k "$lib/skel" "$username"
+}
+
+# fetch <url> <md5>
+# Fetch a remote resource.
+lfs.fetch () {
+    local tmp=$(mktemp $tmpdir/fetch.XXXX)
+    local name=$(basename "$1")
+    local sum
+
+    wget -qO$tmp "$1"
+    sum=$(md5sum $tmp | cut -d" " -f1)
+
+    if test "$sum" != "$2"; then
+        echo "failed to fetch $1" >&2
+        echo "  MD5 checksum expected: $2" >&2
+        echo "  MD5 checksum actual:   $sum [$name]" >&2
+
+        return 1
+    fi
+
+    mv $tmp ./$name
+}
+
+# list-actions
+# List known actions.
+lfs.list-actions () {
+    declare -F | cut -d" " -f3 | grep 'lfs\.' | sed -e s/^lfs.//
+}
+
+# mkroot <dir>
+# Setup root filesystem in directory.
+lfs.mkroot () {
+    local root="$1"; shift || enoarg "root dir"
+
+    (
+        umask 022
+        mkdir -p "$root"
+        cd "$root"
+
+        mkdir boot dev media mnt opt proc run srv sys tmp
+        mkdir -p etc/{opt,skel}
+        mkdir -p var/{cache,games,lib/misc,local,log,mail,opt,spool,tmp}
+        mkdir -p usr/{bin,include,lib/modules,libexec,src}
+        mkdir -p usr/local/{bin,etc,games,include,lib,man,src}
+        mkdir -p usr/{local/,}share/{color/icc,dict,man/man{1,2,3,4,5,6,7,8},misc}
+
+        chmod ugo+rwx tmp var/tmp
+        chmod o+t tmp
+        chmod ugo-w proc sys
+
+        ln -s ../proc/self/mounts etc/mtab
+        ln -s bin usr/sbin
+        ln -s bin usr/local/sbin
+        ln -s usr/bin
+        ln -s usr/lib
+        ln -s usr/sbin
+        ln -s /run var/run
+        ln -s /run/lock var/lock
+    )
+}
+
+# verify-host
+# Verify host has everything it needs to build LFS system.
+lfs.verify-host () {
+    err "does nothing, but feel free to continue"
+}
+
+action="$1"; shift || enoarg "action (try '$(basename "$script") list-actions')"
+
+if ! test "$(type -t "lfs.$action")" = function; then
+    einvarg "$action"
+fi
+
+lfs.$action "$@"; exit
